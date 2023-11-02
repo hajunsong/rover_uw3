@@ -5,6 +5,8 @@ RobotArm::RobotArm(unsigned char NumBody, unsigned char DOF)
 	num_body = NumBody;
 	dof = DOF;
 	body.resize(num_body + 1);
+
+	std::cout << std::setprecision(20) << std::fixed;
 }
 
 RobotArm::~RobotArm()
@@ -14,17 +16,26 @@ RobotArm::~RobotArm()
 
 void RobotArm::run()
 {
-	std::string q_file_name = "/home/keti/Downloads/recurdyn_q_sin.csv";
+	std::string q_file_name = "../data/recurdyn_q.csv";
 	std::vector<double> q_data;
 	uint q_data_size[2] = {0, 0};
-	uint row, col;
-
+	uint q_row, q_col;
 	load_data(q_file_name, &q_data, ",", q_data_size);
-	row = q_data_size[0];
-	col = q_data_size[1];
-	h = q_data[2*col + 0] - q_data[1*col + 0];
+	q_row = q_data_size[0];
+	q_col = q_data_size[1];
 
-	std::cout << "input data size : " <<  q_data_size[0] << ", " << q_data_size[1] << std::endl;
+	std::string f_file_name = "../data/recurdyn_force.csv";
+	std::vector<double> f_data;
+	uint f_data_size[2] = {0, 0};
+	uint f_row, f_col;
+	load_data(f_file_name, &f_data, ",", f_data_size);
+	f_row = f_data_size[0];
+	f_col = f_data_size[1];
+
+	sensor_force = Eigen::VectorXd(6);
+
+	h = q_data[2*q_col + 0] - q_data[1*q_col + 0];
+	g = -9.80665;
 
 	read_base(&body[0]);
 	read_body1(&body[1]);
@@ -34,15 +45,19 @@ void RobotArm::run()
 	read_body5(&body[5]);
 	read_body6(&body[6]);
 
-	fp = fopen("/home/keti/Project/KRISO/rover_uw3/bin/cpp_torque.txt", "w+");
+	fp = fopen("../data/cpp_torque.txt", "w+");
 
-	for(uint indx = 3; indx < row; indx++){
-		t_current = q_data[indx*col + 0];
+	for(uint indx = 3; indx < q_row; indx++){
+		t_current = q_data[indx*q_col + 0];
 
 		for(uint i = 1; i <= num_body; i++){
-			body[i].qi = q_data[indx*col + i];
-			body[i].dqi = q_data[indx*col + i + 6];
-			body[i].ddqi = q_data[indx*col + i + 12];
+			body[i].qi = q_data[indx*q_col + i];
+			body[i].dqi = (q_data[indx*q_col + i] - q_data[(indx - 1)*q_col + i])/h;
+			body[i].ddqi = (((q_data[indx*q_col + i] - q_data[(indx - 1)*q_col + i])/h) - ((q_data[(indx - 1)*q_col + i] - q_data[(indx - 2)*q_col + i])/h))/h;
+		}
+
+		for(uint i = 0; i < 6; i++){
+			sensor_force(i) = f_data[indx*f_col + i + 1];
 		}
 
 		for(uint i = 1; i <= num_body; i++){
@@ -65,8 +80,6 @@ void RobotArm::run()
 		data_save();
 
 		std::cout << "t_current : " << t_current << std::endl;
-
-//		break;
 	}
 
 	fclose(fp);
@@ -121,6 +134,11 @@ void RobotArm::mass_force_analysis(Body *ibody)
 	ibody->fic << 0, 0, ibody->mi*g;
 	ibody->tic << 0, 0, 0;
 
+	if(ibody->id == num_body){
+		ibody->fic += sensor_force.segment(0, 3);
+		ibody->tic += sensor_force.segment(3, 3)*0.001;
+	}
+
 	ibody->Mih = Eigen::MatrixXd(6,6);
 	ibody->Mih.block(0, 0, 3, 3) = ibody->mi*Eigen::Matrix3d::Identity();
 	ibody->Mih.block(0, 3, 3, 3) = -ibody->mi*ibody->rict;
@@ -128,8 +146,8 @@ void RobotArm::mass_force_analysis(Body *ibody)
 	ibody->Mih.block(3, 3, 3, 3) = ibody->Jic - ibody->mi*ibody->rict*ibody->rict;
 
 	ibody->Qih = Eigen::VectorXd(6);
-	ibody->Qih.segment(0, 3) = ibody->fic + ibody->mi*ibody->drict*ibody->wi;
-	ibody->Qih.segment(3, 3) = ibody->tic + ibody->rict*ibody->fic + ibody->mi*ibody->rict*ibody->drict*ibody->wi - ibody->wit*ibody->Jic*ibody->wi;
+	ibody->Qih << ibody->fic + ibody->mi*ibody->drict*ibody->wi
+					, ibody->tic + ibody->rict*ibody->fic + ibody->mi*ibody->rict*ibody->drict*ibody->wi - ibody->wit*ibody->Jic*ibody->wi;
 
 	ibody->Ki = Eigen::MatrixXd(6, 6);
 	ibody->Ki = ibody->Mih;
@@ -151,8 +169,8 @@ void RobotArm::acceleration_analysis(Body *jbody, Body *ibody)
 
 	jbody->Ti = Eigen::MatrixXd(6, 6);
 	jbody->Ti.block(0, 0, 3, 3) = Eigen::MatrixXd::Identity(3, 3);
-	jbody->Ti.block(0, 3, 3, 3) = -jbody->rit;
-	jbody->Ti.block(3, 0, 3, 3) = Eigen::MatrixXd::Zero(3, 3);
+	jbody->Ti.block(0, 3, 3, 3) = Eigen::MatrixXd::Zero(3, 3);
+	jbody->Ti.block(3, 0, 3, 3) = -jbody->rit;
 	jbody->Ti.block(3, 3, 3, 3) = jbody->Ti.block(0, 0, 3, 3);
 
 	jbody->dTi = Eigen::MatrixXd::Zero(6,6);
@@ -176,13 +194,10 @@ void RobotArm::inverse_dynamics(Body *ibody)
 {
 	ibody->Rjih = Eigen::VectorXd(6);
 	ibody->Rjih = -ibody->Li + ibody->Ki*ibody->dYih;
-//	std::cout << "id : " << ibody->id << std::endl;
 	for(uint i = ibody->id + 1; i <= num_body; i++){
-//		std::cout << i << std::endl;
 		ibody->Rjih += body[i].Ki*body[i].Bi*body[i].ddqi;
 	}
 
-//	std::cout << ibody->Rjih << std::endl;
 	ibody->Rjib = ibody->Ti*ibody->Rjih;
 
 	ibody->fji = ibody->Rjib.segment(0, 3);
@@ -190,6 +205,9 @@ void RobotArm::inverse_dynamics(Body *ibody)
 
 	ibody->fjip = ibody->Ai.transpose()*ibody->fji;
 	ibody->njip = ibody->Ai.transpose()*ibody->nji;
+
+	// std::cout << "id : " << ibody->id << std::endl;
+	// std::cout << ibody->Ti << std::endl << std::endl;
 }
 
 void RobotArm::data_save()

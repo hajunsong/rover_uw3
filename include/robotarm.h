@@ -4,6 +4,7 @@
 #include <Eigen/Dense>
 #include <iostream>
 #include <vector>
+#include <iomanip>
 
 #include "fileio.h"
 
@@ -60,6 +61,7 @@ private:
 
 	double t_current, t_end, g, h;
 	FILE* fp;
+	Eigen::VectorXd sensor_force;
 
 	Eigen::Matrix3d tilde(Eigen::Vector3d x);
 
